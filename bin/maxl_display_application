@@ -1,0 +1,313 @@
+#!/usr/bin/python
+# -*- coding: iso-8859-15 -*-
+
+
+sw_author   = 'lucianoalves@oec.com.br'
+sw_ver      = '%prog 1.0.0'
+sw_usg      = '%prog [options]'
+sw_desc     = "No options: Display all applications on the system."
+
+
+# return codes  http://www.tldp.org/LDP/abs/html/exitcodes.html
+SUCCESS     = 0     # success
+FAILURE     = 1     # script failure
+MXL_ERR     = 2     # maxl generic failure (other than login failure)
+TIMEOUT     = 3     # timeout
+CRTL_C      = 130   # aborted via control-c
+
+
+try:
+    import os               # basic library
+    import sys              # basic library
+    import optparse         # command line parsing
+    import shlex            # generate command line
+    import subprocess       # start child process
+    import tempfile         # generate tempfile
+    import ConfigParser     # configuration file parsing
+    import time             # measure time
+    import signal           # send signal to child process
+    import logging          # logging to file and console
+#
+except ImportError, e:
+    print
+    print "["+time.strftime("%H:%M:%S")+"] [ERROR] Import module: %s   \n" % e
+    print "["+time.strftime("%H:%M:%S")+"] [ERROR] Exiting with error! \n"
+    sys.exit(FAILURE)
+#
+def run_command(cmd_line='', time_to_check=1, timeout=60, sig_nal='sigterm'):   # OK
+    """ Generic function to run any command and check the return code
+        added with timeout feature :-)
+        return = -1 : time out
+        return =  0 : success
+        return = >0 : command error code"""
+    # https://docs.python.org/2/library/subprocess.html
+    logger.debug('Executing command: %s \n' % cmd_line)
+     
+    is_timed_out = False
+     
+    try:
+        start_time = int(time.time())
+         
+        subproc = subprocess.Popen(cmd_line, shell=False)
+         
+        while subproc.poll() is None: # 'None' means still running
+            now = int(time.time())
+             
+            spent_time = int((now - start_time))
+            logger.debug('Waiting for %d in seconds \n' % spent_time)
+             
+            if spent_time >= timeout:
+                logger.debug('Timeout reached in %d in seconds \n' % spent_time)
+                 
+                is_timed_out = True
+                 
+                logger.debug('Trying to kill the command with %s signal \n' % sig_nal)
+                
+                if sig_nal=='sigterm':
+                    os.kill(subproc.pid, signal.SIGTERM)
+                
+                os.kill(subproc.pid, signal.SIGKILL)
+             
+            time.sleep(time_to_check)
+             
+        # after while, the command has finished
+        if is_timed_out:
+            logger.debug('Command terminated after timeout \n')
+             
+            return -1
+         
+        subproc.communicate(input=None)
+         
+        logger.debug('Command terminated with return code: %d \n' % subproc.returncode)
+         
+        return subproc.returncode
+     
+    except OSError, e:
+        logger.critical('Command could NOT execute. error was: %s \n' % e)
+#
+def run_maxl():         # 06    OK
+    """prepare and run the MaxL command"""
+    # Preparing the command and arguments
+    cmd_line = shlex.split(opts.maxl_bin+' -D '+' '+f.name +' '+
+                           cfg.get('MaxL_login','private_key'))
+    
+    return run_command(cmd_line, 1, opts.timeout, opts.kill_signal)
+#
+def write_to_file():    # 05    OK
+    """write contents to file"""
+    logger.debug('Starting writing to MaxL temp file \n')
+     
+    try:
+        #
+        ############################### HEADER #########################################
+        if opts.verbose:                                                               #
+            f.write("set message level all;   \n")                                     #
+        else:                                                                          #
+            f.write("set message level fatal; \n")                                     #
+        f.write("spool off;             \n")                                           #
+        f.write("set column_width %s;   \n" % opts.col_width)                          #
+        f.write("login $key %s $key %s; \n" % (cfg.get('MaxL_login',                   #
+                                                       'encrypted_login'),             #
+                                               cfg.get('MaxL_login',                   #
+                                                       'encrypted_password')))         #
+        f.write("IFERROR \"if_error\";  \n")                                           #
+        ############################### HEADER #########################################
+        # 
+        if not opts.application:
+            f.write("display application all;\n")
+        else:
+            f.write("display application %s;\n" % opts.application)
+         
+        #
+        ############################### FOOTER #########################################
+        f.write("IFERROR \"if_error\";   \n")                                          #
+        f.write("logout;                 \n")                                          #
+        f.write("exit 0;                 \n")                                          #
+        f.write(":if_error;              \n")                                          #
+        f.write("logout;                 \n")                                          #
+        f.write("exit 1;                 \n")                                          #
+        ############################### FOOTER #########################################
+        #
+    except OSError, e:
+        logger.critical(' %s \n' % e)
+        f.close()
+        sys.exit(FAILURE)
+    
+    f.flush()
+     
+    logger.debug('MaxL temp file created: %s \n' % f.name)
+     
+    if opts.verbose:
+        f.seek(0)
+         
+        for line in f:
+            print line
+#
+def create_tpfile():    # 04    OK
+    """ Create tempfile """
+    # https://docs.python.org/2/library/tempfile.html
+    logger.debug('Starting creating MaxL temp file \n')
+     
+    global f
+     
+    try:
+        f = tempfile.NamedTemporaryFile(mode='w+b', bufsize=-1, 
+                                              suffix='.mxl',
+                                              prefix='display_application_',
+                                              dir=opts.tempdir)
+    
+    except OSError, e:
+        logger.critical(' %s \n' % e)
+        sys.exit(FAILURE)
+    
+    logger.debug('MaxL temp file created ok \n')
+#
+def read_cfg_file():    # 03    OK
+    """ Read the configuration file """
+    # https://docs.python.org/2/library/configparser.html
+    logger.debug('Starting reading %s \n' % opts.conf_file)
+     
+    global cfg
+     
+    cfg = ConfigParser.RawConfigParser()
+     
+    try:
+        cfg.read(opts.conf_file)
+        cfg.get('MaxL_login','private_key')
+        cfg.get('MaxL_login','encrypted_login')
+        cfg.get('MaxL_login','encrypted_password')
+     
+    except ConfigParser.Error, e:
+        logger.critical('Error reading %s file:  \n' % opts.conf_file)
+        logger.critical('ConfigParser module: %s \n' % e)
+        sys.exit(FAILURE)
+  
+    logger.debug('File %s is OK \n' % opts.conf_file)
+#
+def setup_logging():    # 02    OK
+    """Setup logging for console handler"""
+    # https://docs.python.org/2/library/logging.html
+     
+    if opts.verbose:
+        c_log_level = 10    # DEBUG
+    else:
+        c_log_level = 50    # CRITICAL
+     
+    global logger
+     
+    logger = logging.getLogger('smalllogger')
+     
+    logger.setLevel(logging.DEBUG)
+     
+    # create console logging handler
+    c_handler = logging.StreamHandler()
+     
+    c_handler.setLevel(c_log_level)
+     
+    c_handler.setFormatter(logging.Formatter(
+                           fmt='%(asctime)s [%(levelname)s] - %(message)s', 
+                           datefmt='[%H:%M:%S]'))
+     
+    logger.addHandler(c_handler)
+     
+    logger.debug('Logger started successfully \n')
+#
+def parse_options():    # 01    OK
+    """ Define all options and arguments,
+    values, limits, usage, version and help message. """
+    # https://docs.python.org/2/library/optparse.html
+     
+    # -o is RESERVED for object name, example: filter_name, function
+     
+    parser = optparse.OptionParser(version=sw_ver, usage=sw_usg,description=sw_desc)
+     
+    parser.add_option("-a", "--application",  dest="application",  type="string")
+     
+    ###
+    group = optparse.OptionGroup(parser, "Verbose and output column width")
+     
+    group.add_option("-v", "--verbose",      dest="verbose",      action="store_true", 
+                     default=False,  
+                     help="MaxL message level. -v = [all] default to [fatal]")
+     
+    group.add_option("-w", "--col_width",    dest="col_width",    type="int", 
+                     default=50,
+                     help="output data column width. default to %default")
+    
+    parser.add_option_group(group)    
+     
+     
+    ###
+    group = optparse.OptionGroup(parser, "Timeout value and OS signal to kill")
+     
+    group.add_option("-t", "--timeout",      dest="timeout",      type="int", 
+                     default=60,
+                     help="timeout (in seconds). default to %default seconds")
+     
+    kill_list = ['sigterm','sigkill']
+    group.add_option("-k", "--kill_signal",  dest="kill_signal",  type="choice",
+                     default='sigterm',      choices=kill_list,
+                     help="sigterm (-15) sigkill (-9). default to %default")
+     
+    parser.add_option_group(group)
+     
+     
+    ###
+    group = optparse.OptionGroup(parser, "Temp directory, conf file location and maxl binary",
+                                 "Only change these if you get errors with the defaults.")
+    
+    group.add_option("-m", "--maxl_bin",     dest="maxl_bin",     type="string", 
+                     default="essmsh", 
+                     help="MaxL binary. default to %default")
+    
+    tmp_dir = tempfile.gettempdir()
+    group.add_option("-e", "--tempdir",      dest="tempdir",      type="string", 
+                     default=tmp_dir, 
+                     help="temp directory. default to %default")
+    
+    group.add_option("-c", "--conf_file",    dest="conf_file",    type="string", 
+                     default="/u01/Oracle/home_infra/maxl/conf/maxl_login.conf",
+                     help="default to %default")
+       
+    parser.add_option_group(group)
+     
+    global opts
+     
+    (opts, args) = parser.parse_args()
+#
+def main():             # 00    OK
+    """ Main function that run all the show """
+    print
+     
+    parse_options()                     # 01 read options and arguments
+     
+    setup_logging()                     # 02 create the logger object
+     
+    read_cfg_file()                     # 03 read maxl_passsword.conf
+     
+    create_tpfile()                     # 04 create temp file
+     
+    write_to_file()                     # 05 write commands to temp file
+     
+    ret_code = run_maxl()               # 06 ask MaxL command to execute the temp file
+     
+    f.close()                           # close temp file before exit script
+     
+    logger.debug('Exiting with return code: %d \n' % ret_code)
+     
+    if ret_code == 0:
+        sys.exit(SUCCESS)               # ALL OK
+     
+    if ret_code == -1:
+        sys.exit(TIMEOUT)               # ERROR: in this case was: timeout
+     
+    sys.exit(ret_code)                  # ERROR: in this case the return error from command executed
+#
+if __name__ == "__main__":
+    try:
+        main()
+     
+    except KeyboardInterrupt, e:
+        print "["+time.strftime("%H:%M:%S")+"] [ERROR] Program ABORTED by ctrl-C \n"
+        sys.exit(CRTL_C)
+#
