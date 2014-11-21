@@ -124,6 +124,12 @@ def write_to_file():    # 05    OK
         elif opts.action == 'clear_logfile':
             f.write("alter system clear logfile;\n")
          
+        elif opts.action == 'compact_security_file':
+            f.write("alter system compact security file;\n")
+         
+        elif opts.action == 'sync_security_backup':
+            f.write("alter system sync security_backup;\n")
+                
         elif opts.action == 'logout_session_on_app':
             if not opts.force:
                 f.write("alter system logout session on application %s;\n" % opts.application)
@@ -246,7 +252,9 @@ def parse_options():    # 01    OK
     parser.add_option("-d", "--database",     dest="database",     type="string")
      
     action_list = ['load','unload','clear_logfile','logout_session_on_app',
-                   'logout_session_on_db','logout_session_all']
+                   'logout_session_on_db','logout_session_all','compact_security_file',
+                   'sync_security_backup']
+                   
     parser.add_option("-x", "--action",  dest="action",  type="choice",
                       choices=action_list,
                       help="Logout actions can use --force.")
