@@ -3,7 +3,7 @@
 
 
 sw_author   = 'lucianoalves@oec.com.br'
-sw_ver      = '%prog 1.0.0'
+sw_ver      = '%prog 1.0.1'
 sw_usg      = '%prog [options]'
 sw_desc     = "Change application-wide setting."
 
